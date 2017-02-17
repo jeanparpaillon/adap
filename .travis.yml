@@ -1,8 +1,17 @@
 language: elixir
 elixir:
-    - 1.0.4
+  - 1.3.2
+  - 1.4.0
+otp_release:
+  - 18.2
+  - 19.1
+matrix:
+  exclude:
+  - elixir: 1.4.0
+    otp_release: 18.2
+  - elixir: 1.3.2
+    otp_release: 19.1
 notifications:
   recipients:
     - arnaud.wetzel@kbrwadventure.com
-otp_release:
-  - 17.3
+    - jean.parpaillon@free.fr
