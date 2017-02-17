@@ -18,7 +18,7 @@ defmodule Adap.Mixfile do
                         "Doc"=>"http://hexdocs.pm/adap"},
                contributors: ["Arnaud Wetzel"],
                licenses: ["MIT"]],
-     deps: [{:ex_doc, only: :dev}]]
+     deps: [{:ex_doc, "~> 0.14", only: :dev}]]
   end
 
   def application do
