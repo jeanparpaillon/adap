@@ -3,14 +3,14 @@ defmodule Adap.Stream do
   `Adap.Stream.new/3` create a stream, it takes a source enumerable, an emitter module and a chunk size.
 
   - each element from the source is emitted and processed accross processes/nodes by `emitter.do_emit/2`
-  - these element processing (which may take place on any node) can 
+  - these element processing (which may take place on any node) can
       - append elements to the source using : `Adap.Stream.emit/2`, which will be emitted in turn
       - send processed element to the stream output using `Adap.Stream.done/2`
   - the streamed elements are pulled, emitted and received by `chunk_size` in
     order to avoid message congestion if element processing is too slow.
 
   Let's see an example:
-      
+
       defmodule MyEmitter do
         use Adap.Stream.Emitter
         # if augment_from_local_data(elem) returns a modified elem according to local data
@@ -50,47 +50,62 @@ defmodule Adap.Stream do
   ###### Stream Sink GenServer callbacks ####
   use GenServer
 
-  def init({elems,emit_mod,chunk_size}), do:
-    {:ok,%{emitters: [Emitter.start!(elems,self)],elems: [],count: 0,req: nil, chunk_size: chunk_size,emit_mod: emit_mod}}
+  def init({elems,emit_mod,chunk_size}) do
+    {:ok, %{emitters: [Emitter.start!(elems,self())],
+            elems: [],
+            count: 0,
+            req: nil,
+            chunk_size: chunk_size,
+            emit_mod: emit_mod}}
+  end
 
   ## when no more chunk source available, wait done_timeout to ensure a time
   ## window when you have received your last chunk elem but one of its emitted emitter arrived afterward
   @done_timeout 200
   @doc false
-  def handle_info(:try_done,%{emitters: [],req: req}=state), do:
+  def handle_info(:try_done,%{emitters: [],req: req}=state) do
     (GenServer.reply(req,:halt);{:stop,:normal,state})
-  def handle_info(:try_done,%{req: req}=state), do:
+  end
+  def handle_info(:try_done,%{req: req}=state) do
     (GenServer.reply(req,[]);{:noreply,state})
+  end
 
   @doc false
   def handle_call(:next,reply_to,%{emitters: []}=state) do
-    Process.send_after(self,:try_done,@done_timeout)
-    {:noreply,%{state|req: reply_to}}
+    Process.send_after(self(), :try_done, @done_timeout)
+    {:noreply,%{state | req: reply_to}}
   end
   ## make sure that chsize elems are emitted
-  def handle_call(:next,reply_to,%{chunk_size: chsize}=state), do:
-    {:noreply,%{state|req: reply_to}|>emit_chunk(chsize)}
+  def handle_call(:next, reply_to, %{chunk_size: chsize}=state) do
+    {:noreply,%{state | req: reply_to} |> emit_chunk(chsize)}
+  end
 
   ## when sink receives an elem: reply if chunk count is reached, else buffer it
   @doc false
-  def handle_cast({:done,elem},%{count: c,chunk_size: chsize}=state) when c+1 == chsize, do:
-    (GenServer.reply(state.req,[elem|state.elems]) ; {:noreply,%{state|count: 0, elems: []}})
-  def handle_cast({:done,elem},%{count: count, elems: elems}=state), do:
+  def handle_cast({:done, elem}, %{count: c, chunk_size: chsize}=state) when c + 1 == chsize do
+    GenServer.reply(state.req, [elem | state.elems])
+    {:noreply,%{state | count: 0, elems: []}}
+  end
+  def handle_cast({:done,elem},%{count: count, elems: elems}=state) do
     {:noreply,%{state|count: count+1, elems: [elem|elems]}}
+  end
 
   ## for small emitter (list): make it local to sink (:new_elems), else create a remote Emitter and send its pid (:new_emitter)
-  def handle_cast({:new_emitter,pid},state), do:
+  def handle_cast({:new_emitter,pid},state) do
     {:noreply,%{state| emitters: [pid|state.emitters]}}
-  def handle_cast({:new_elems,elems},state), do:
-    {:noreply,%{state| emitters: [Emitter.start!(elems,self)|state.emitters]}}
+  end
+  def handle_cast({:new_elems,elems},state) do
+    {:noreply,%{state | emitters: [Emitter.start!(elems, self())|state.emitters]}}
+  end
 
   def handle_cast(:halt,%{emitters: emitters}=state) do
     for emitter<-emitters, do: Emitter.halt(emitter)
     {:stop,:normal,state}
   end
 
-  defp emit_chunk(%{emitters: [], count: c}=state,rem), do: 
+  defp emit_chunk(%{emitters: [], count: c}=state,rem) do
     %{state|count: c+rem}
+  end
   defp emit_chunk(%{emitters: [emitter|rest]=emitters,emit_mod: emit_mod}=state,rem) do
     case Emitter.next(emitter,rem,emit_mod) do
       ^rem -> %{state|emitters: emitters}
@@ -119,17 +134,19 @@ defmodule Adap.Stream.Emitter do
     cont.({:halt,[]})
     {:stop,:normal,[]}
   end
-  def init({elems,sink}), do:
-    {:ok,reduce_fn(elems,sink)}
-  defp reduce_fn(elems,sink) do
-    &Enumerable.reduce(elems,&1,fn 
-      elem,{1,emit}-> spawn_link(fn->emit.do_emit(sink,elem)end); {:suspend,{0,emit}}
-      elem,{rem,emit}-> spawn_link(fn->emit.do_emit(sink,elem)end); {:cont,{rem-1,emit}}
+  def init({elems,sink}) do
+    {:ok, reduce_fn(elems, sink)}
+  end
+  defp reduce_fn(elems, sink) do
+    &Enumerable.reduce(elems, &1, fn
+      elem,{1, emit} ->
+	spawn_link(fn -> emit.do_emit(sink, elem) end)
+        {:suspend, {0, emit}}
+	elem,{rem,emit}-> spawn_link(fn->emit.do_emit(sink,elem)end); {:cont,{rem-1,emit}}
     end)
   end
 
-  use Behaviour
-  defcallback do_emit(sink :: pid,elem :: term) :: :ok
+  @callback do_emit(sink :: pid,elem :: term) :: :ok
   defmacro __using__(_) do
     quote do
       @behaviour Adap.Stream.Emitter
